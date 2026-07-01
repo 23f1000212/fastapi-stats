@@ -1,15 +1,23 @@
 import time
 import uuid
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 EMAIL = "23f1000212@ds.study.iitm.ac.in"
-
 ALLOWED_ORIGIN = "https://dash-cs5l60.example.com"
 
 app = FastAPI()
+
+# CORS MUST be added before custom middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[ALLOWED_ORIGIN],
+    allow_credentials=False,
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 
 class HeaderMiddleware(BaseHTTPMiddleware):
@@ -18,47 +26,29 @@ class HeaderMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        elapsed = time.perf_counter() - start
-
         response.headers["X-Request-ID"] = str(uuid.uuid4())
-        response.headers["X-Process-Time"] = f"{elapsed:.6f}"
+        response.headers["X-Process-Time"] = f"{time.perf_counter() - start:.6f}"
 
         return response
 
 
 app.add_middleware(HeaderMiddleware)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 @app.get("/")
 async def home():
-    return {"message": "FastAPI Statistics Service Running"}
+    return {"status": "ok"}
 
 
 @app.get("/stats")
 async def stats(values: str = Query(...)):
-    try:
-        nums = [int(i.strip()) for i in values.split(",") if i.strip()]
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid integer list")
-
-    if len(nums) == 0:
-        raise HTTPException(status_code=400, detail="No values supplied")
-
-    total = sum(nums)
+    nums = [int(x.strip()) for x in values.split(",")]
 
     return {
         "email": EMAIL,
         "count": len(nums),
-        "sum": total,
+        "sum": sum(nums),
         "min": min(nums),
         "max": max(nums),
-        "mean": total / len(nums),
+        "mean": sum(nums) / len(nums),
     }
