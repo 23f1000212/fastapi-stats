@@ -1,100 +1,124 @@
-import time
-import uuid
-
-import jwt
-from fastapi import FastAPI, Query, HTTPException
+import os
+import yaml
+from dotenv import load_dotenv
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from starlette.middleware.base import BaseHTTPMiddleware
 
-EMAIL = "23f1000212@ds.study.iitm.ac.in"
+# -----------------------------
+# Load .env
+# -----------------------------
+load_dotenv()
 
-ALLOWED_ORIGIN = "https://dash-cs5l60.example.com"
+app = FastAPI(title="12-Factor Config Service")
 
-ISSUER = "https://idp.exam.local"
-AUDIENCE = "tds-v2xo2a50.apps.exam.local"
-
-PUBLIC_KEY = """
------BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2okOHspNjgA+2rTLbeuY
-cxiP/hG8C6Sb9iwg3yiLAA4HCnpITcbWCSelbvbYGuc3EbNy4xFyf5Cbj5DHJMID
-EkryOgyd2giIIIBOUBj8S63uGcnRpOBh9NFatfNwheKuzsPuVNldu6A9cNteNpXc
-WyJjG2axVfmq7i6SuKr1JoWYG7xTTAvKPujSl4OtsQfO3h5NepzdfXpr28oNnzfW
-ed+zclR6BcmNNo/WVfJ4xyCLSf0BCOgdTgW6PdaChd1l9VDetJZVEgC5tkyvXsfI
-SI6iyrYbKR0NEBSqq4XkadEjsCs4F1RncsS4LlgniT7GlkL9Mce3b0wGLs9/7ZIX
-dQIDAQAB
------END PUBLIC KEY-----
-"""
-
-app = FastAPI()
-
+# -----------------------------
+# Enable CORS
+# -----------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# -----------------------------
+# Default configuration
+# -----------------------------
+DEFAULTS = {
+    "port": 8000,
+    "workers": 1,
+    "debug": False,
+    "log_level": "info",
+    "api_key": "default-secret-000",
+}
 
-class HeaderMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        start = time.perf_counter()
+# -----------------------------
+# Helper functions
+# -----------------------------
+def to_bool(value):
+    return str(value).strip().lower() in (
+        "true",
+        "1",
+        "yes",
+        "on",
+    )
 
-        response = await call_next(request)
 
-        response.headers["X-Request-ID"] = str(uuid.uuid4())
-        response.headers["X-Process-Time"] = f"{time.perf_counter()-start:.6f}"
+def coerce(key, value):
+    if key in ("port", "workers"):
+        return int(value)
 
-        return response
+    if key == "debug":
+        return to_bool(value)
+
+    return str(value)
 
 
-app.add_middleware(HeaderMiddleware)
+# -----------------------------
+# Endpoint
+# -----------------------------
+@app.get("/effective-config")
+def effective_config(set: list[str] | None = Query(default=None)):
+
+    config = DEFAULTS.copy()
+
+    # -------------------------
+    # YAML layer
+    # -------------------------
+    if os.path.exists("config.development.yaml"):
+        with open("config.development.yaml", "r") as f:
+            yaml_config = yaml.safe_load(f) or {}
+
+        for key, value in yaml_config.items():
+            config[key] = coerce(key, value)
+
+    # -------------------------
+    # .env layer
+    # -------------------------
+    for key, value in os.environ.items():
+
+        if key == "NUM_WORKERS":
+            config["workers"] = int(value)
+
+        elif key in config:
+            config[key] = coerce(key, value)
+
+    # -------------------------
+    # APP_* environment variables
+    # -------------------------
+    for key, value in os.environ.items():
+
+        if key.startswith("APP_"):
+
+            actual_key = key[4:].lower()
+
+            config[actual_key] = coerce(actual_key, value)
+
+    # -------------------------
+    # CLI overrides
+    # -------------------------
+    if set:
+
+        for item in set:
+
+            if "=" not in item:
+                continue
+
+            key, value = item.split("=", 1)
+
+            config[key] = coerce(key, value)
+
+    # -------------------------
+    # Mask secret
+    # -------------------------
+    config["api_key"] = "****"
+
+    return config
 
 
 @app.get("/")
-async def home():
-    return {"status": "running"}
-
-
-@app.get("/stats")
-async def stats(values: str = Query(...)):
-    nums = [int(x) for x in values.split(",")]
-
+def home():
     return {
-        "email": EMAIL,
-        "count": len(nums),
-        "sum": sum(nums),
-        "min": min(nums),
-        "max": max(nums),
-        "mean": sum(nums) / len(nums),
+        "message": "12-Factor Config Service Running"
     }
-
-
-class TokenRequest(BaseModel):
-    token: str
-
-
-@app.post("/verify")
-async def verify(body: TokenRequest):
-
-    try:
-        payload = jwt.decode(
-            body.token,
-            PUBLIC_KEY,
-            algorithms=["RS256"],
-            issuer=ISSUER,
-            audience=AUDIENCE,
-        )
-
-        return {
-            "valid": True,
-            "email": payload.get("email"),
-            "sub": payload.get("sub"),
-            "aud": payload.get("aud"),
-        }
-
-    except jwt.PyJWTError:
-        raise HTTPException(
-            status_code=401,
-            detail={"valid": False},
-        )
