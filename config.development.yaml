@@ -1,4 +1,0 @@
-port: 8274
-workers: 10
-log_level: error
-api_key: key-vrgxv50g3x
